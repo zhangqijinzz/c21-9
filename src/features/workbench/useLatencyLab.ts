@@ -1,10 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ProjectRepository } from "../../shared/repositories/projectRepository";
+import {
+  ProjectRepository,
+  type LoadOutcome,
+} from "../../shared/repositories/projectRepository";
 import type {
   LatencyProject,
   SimulationMode,
   WorkspaceDocument,
 } from "../../shared/domain/types";
+import type { StorageAccessReason } from "../../shared/services/storageError";
+import { downloadWorkspace } from "../../shared/services/exportService";
 import {
   createProject,
   duplicateProject,
@@ -30,15 +35,32 @@ import { removeProject, updateProject } from "../projects/projectViewModel";
 import { simulateProject } from "../../shared/domain/simulation";
 
 export type LabStatus =
-  "loading" | "ready" | "editing" | "simulating" | "error" | "completed";
+  | "loading"
+  | "ready"
+  | "editing"
+  | "simulating"
+  | "error"
+  | "completed"
+  | "blocked";
 export type LabModule =
   "projects" | "graph" | "simulation" | "scenarios" | "archive";
+
+/**
+ * 本地数据无法确认时的阻断信息。此时没有任何文档进入可写状态，
+ * 用户只能重试读取或取出恢复副本。
+ */
+export interface LoadFailure {
+  reason: StorageAccessReason;
+  message: string;
+  recoveryDocument?: WorkspaceDocument;
+}
 
 export function useLatencyLab() {
   const repository = useMemo(() => new ProjectRepository(), []);
   const [document, setDocument] = useState<WorkspaceDocument | null>(null);
   const documentRef = useRef<WorkspaceDocument | null>(null);
   const [status, setStatus] = useState<LabStatus>("loading");
+  const [loadFailure, setLoadFailure] = useState<LoadFailure | null>(null);
   const [module, setModule] = useState<LabModule>("simulation");
   const [mode, setMode] = useState<SimulationMode>("expected");
   const [comparisonIds, setComparisonIds] = useState<{
@@ -87,30 +109,55 @@ export function useLatencyLab() {
     [],
   );
 
-  useEffect(() => {
-    let mounted = true;
-    void repository
-      .load()
-      .then(({ document: loaded, recovered }) => {
-        if (!mounted) return;
-        documentRef.current = loaded;
-        setDocument(loaded);
-        setStatus("ready");
-        if (recovered)
-          setNotice("已载入示例工作区；后续修改会自动保存到此设备。");
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setStatus("error");
-        setNotice("本地项目读取失败，刷新页面可再次尝试。");
+  const applyOutcome = useCallback((outcome: LoadOutcome) => {
+    if (outcome.outcome === "unavailable") {
+      // 读取未成功：不载入任何示例、不允许编辑与保存，等待用户重试或取出副本。
+      documentRef.current = null;
+      setDocument(null);
+      setStatus("blocked");
+      setLoadFailure({
+        reason: outcome.reason,
+        message: outcome.message,
+        recoveryDocument: outcome.recoveryDocument,
       });
-    return () => {
-      mounted = false;
-    };
-  }, [repository]);
+      return;
+    }
+    documentRef.current = outcome.document;
+    setDocument(outcome.document);
+    setLoadFailure(null);
+    setStatus("ready");
+    if (outcome.source === "empty")
+      setNotice(
+        "未发现本地项目，已载入示例工作区；后续修改会自动保存到此设备。",
+      );
+    else if (outcome.source === "recovery-copy")
+      setNotice(
+        "主存储中的项目数据无法识别，已改用本地恢复副本；修改确认无误后会保存回主存储。",
+      );
+    else if (outcome.recovered)
+      setNotice("部分项目数据损坏，已自动修复可用部分并保留其余内容。");
+  }, []);
+
+  const retryLoad = useCallback(() => {
+    setStatus("loading");
+    setLoadFailure(null);
+    void repository.load().then(applyOutcome);
+  }, [repository, applyOutcome]);
+
+  useEffect(() => {
+    void repository.load().then(applyOutcome);
+  }, [repository, applyOutcome]);
+
+  const exportRecoveryCopy = useCallback((): boolean => {
+    const recovery = loadFailure?.recoveryDocument;
+    if (!recovery) return false;
+    return downloadWorkspace(recovery);
+  }, [loadFailure]);
 
   const commit = useCallback(
     (next: WorkspaceDocument, nextStatus: LabStatus = "editing") => {
+      // 读取未确认成功时绝不进入可写流程（repository.save 也有同样的闸门）。
+      if (loadFailure) return;
       const currentRevision = ++revision.current;
       documentRef.current = next;
       setDocument(next);
@@ -133,7 +180,7 @@ export function useLatencyLab() {
           }
         });
     },
-    [repository],
+    [repository, loadFailure],
   );
 
   const editProject = useCallback(
@@ -273,6 +320,9 @@ export function useLatencyLab() {
     graphAnalysis,
     simulationValid,
     status,
+    loadFailure,
+    retryLoad,
+    exportRecoveryCopy,
     module,
     setModule,
     mode,

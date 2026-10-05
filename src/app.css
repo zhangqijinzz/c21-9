@@ -2533,3 +2533,91 @@ button:disabled {
     line-height: 1.5;
   }
 }
+.blocked-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 16px;
+  background: #f5f7f1;
+}
+.blocked-card {
+  width: min(560px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 34px 36px 28px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  box-shadow: 0 18px 50px rgba(23, 36, 36, 0.08);
+}
+.blocked-mark {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  color: #c37161;
+  background: #f8e0db;
+  border-radius: 15px;
+}
+.blocked-card > strong {
+  color: #223a32;
+  font: 700 17px var(--display);
+}
+.blocked-card > p {
+  margin: 0;
+  color: #6f7a72;
+  font-size: 12px;
+  line-height: 1.8;
+}
+.blocked-recovery {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 14px 16px;
+  background: #f7f8f3;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+}
+.blocked-recovery > span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #59675e;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.blocked-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+.blocked-copy-area {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.blocked-copy-area textarea {
+  width: 100%;
+  padding: 10px 12px;
+  color: #33423b;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  font: 10px/1.6 var(--mono);
+  resize: vertical;
+}
+.blocked-error {
+  color: #b75f4e;
+  font-size: 10px;
+  font-style: normal;
+}
+.blocked-footnote {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+  line-height: 1.7;
+}

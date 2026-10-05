@@ -11,6 +11,7 @@ import {
   X,
 } from "lucide-react";
 import { useLatencyLab } from "./useLatencyLab";
+import LoadBlockedScreen from "./LoadBlockedScreen";
 import ProjectsPanel from "../projects/ProjectsPanel";
 import GraphEditor from "../graph-editor/GraphEditor";
 import SimulationPanel from "../simulation/SimulationPanel";
@@ -43,12 +44,31 @@ const navigation: NavigationItem[] = [
 
 export default function LatencyLabView() {
   const vm = useLatencyLab();
-  if (
-    vm.status === "loading" ||
-    !vm.document ||
-    !vm.activeProject ||
-    !vm.result
-  )
+  if (vm.status === "loading")
+    return (
+      <main className="loading-screen">
+        <div className="loading-mark">
+          <RadioTower size={24} />
+        </div>
+        <strong>LatencyLab</strong>
+        <span>正在恢复本地工作区…</span>
+        <div className="loading-line">
+          <i />
+        </div>
+      </main>
+    );
+
+  // 读取失败且未确认数据状态：只读阻断屏，不载入示例、不进入可写状态。
+  if (vm.loadFailure)
+    return (
+      <LoadBlockedScreen
+        failure={vm.loadFailure}
+        onRetry={vm.retryLoad}
+        onExport={vm.exportRecoveryCopy}
+      />
+    );
+
+  if (!vm.document || !vm.activeProject || !vm.result)
     return (
       <main className="loading-screen">
         <div className="loading-mark">

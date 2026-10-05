@@ -6,6 +6,11 @@ import {
   type WorkspaceDocument,
 } from "../domain/types";
 import { IndexedDbService } from "../services/indexedDbService";
+import {
+  classifyStorageError,
+  StorageAccessError,
+  type StorageAccessReason,
+} from "../services/storageError";
 
 const FALLBACK_KEY = "latency-lab.workspace.v1";
 
@@ -188,51 +193,124 @@ function parseWorkspace(
   return { document: { version: 1, activeProjectId, projects }, recovered };
 }
 
+function exampleWorkspace(): WorkspaceDocument {
+  return {
+    version: 1,
+    activeProjectId: EXAMPLE_PROJECT.id,
+    projects: [structuredClone(EXAMPLE_PROJECT)],
+  };
+}
+
 export interface WorkspaceStorage {
   read(): Promise<unknown>;
   write(value: WorkspaceDocument): Promise<void>;
 }
 
+/**
+ * 读取本地恢复副本。无法解析时返回 undefined，但不删除原始内容——
+ * 它可能是用户仅剩的数据，无权在读出失败时销毁。
+ */
+export function readRecoveryCopy():
+  { document: WorkspaceDocument; recovered: boolean } | undefined {
+  let local: string | null;
+  try {
+    local = localStorage.getItem(FALLBACK_KEY);
+  } catch {
+    return undefined;
+  }
+  if (!local) return undefined;
+  try {
+    const parsed = parseWorkspace(JSON.parse(local) as unknown);
+    return parsed ? { ...parsed, recovered: true } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * load 的结果：
+ * - ready：已确认数据库状态（确为空、读到数据，或主存储读到损坏数据后
+ *   改用恢复副本），可以安全进入可写状态。
+ * - unavailable：没能确认数据库里是否存在数据，禁止写入；reason 区分
+ *   unsupported/blocked/failure，recoveryDocument 携带可读的恢复副本。
+ */
+export type LoadOutcome =
+  | {
+      outcome: "ready";
+      document: WorkspaceDocument;
+      recovered: boolean;
+      source: "database" | "recovery-copy" | "empty";
+    }
+  | {
+      outcome: "unavailable";
+      reason: StorageAccessReason;
+      message: string;
+      recoveryDocument?: WorkspaceDocument;
+    };
+
 export class ProjectRepository {
+  /**
+   * 只有主存储读取真正完成（得到明确答复）后才允许写入。
+   * 读取失败保持 false，任何 save 都会被拒绝，避免示例/空白数据覆盖真实数据。
+   */
+  private writable = false;
+
   constructor(
     private readonly storage: WorkspaceStorage = new IndexedDbService(),
   ) {}
 
-  async load(): Promise<{ document: WorkspaceDocument; recovered: boolean }> {
+  async load(): Promise<LoadOutcome> {
+    let raw: unknown;
     try {
-      const stored = parseWorkspace(await this.storage.read());
-      if (stored) return stored;
-      const local = localStorage.getItem(FALLBACK_KEY);
-      if (local) {
-        try {
-          const fallback = parseWorkspace(JSON.parse(local) as unknown);
-          if (fallback) return { ...fallback, recovered: true };
-        } catch {
-          localStorage.removeItem(FALLBACK_KEY);
-        }
-      }
-    } catch {
-      const local = localStorage.getItem(FALLBACK_KEY);
-      if (local) {
-        try {
-          const fallback = parseWorkspace(JSON.parse(local) as unknown);
-          if (fallback) return { ...fallback, recovered: true };
-        } catch {
-          localStorage.removeItem(FALLBACK_KEY);
-        }
-      }
+      raw = await this.storage.read();
+    } catch (error) {
+      // 读取没有成功：无法确认数据库中是否有数据，绝不进入可写状态。
+      const accessError: StorageAccessError = classifyStorageError(error);
+      const recovery = readRecoveryCopy();
+      return {
+        outcome: "unavailable",
+        reason: accessError.reason,
+        message: accessError.message,
+        ...(recovery ? { recoveryDocument: recovery.document } : {}),
+      };
     }
+
+    // 读取已完成，数据库状态确定，此后写入不会覆盖未知数据。
+    this.writable = true;
+
+    const stored = parseWorkspace(raw);
+    if (stored)
+      return {
+        outcome: "ready",
+        document: stored.document,
+        recovered: stored.recovered,
+        source: "database",
+      };
+
+    const recovery = readRecoveryCopy();
+    if (recovery)
+      return {
+        outcome: "ready",
+        document: recovery.document,
+        recovered: true,
+        source: "recovery-copy",
+      };
+
+    // 主存储与恢复副本都确认为空/不可解析：这是真正的首次使用。
     return {
-      document: {
-        version: 1,
-        activeProjectId: EXAMPLE_PROJECT.id,
-        projects: [structuredClone(EXAMPLE_PROJECT)],
-      },
+      outcome: "ready",
+      document: exampleWorkspace(),
       recovered: true,
+      source: "empty",
     };
   }
 
   async save(document: WorkspaceDocument): Promise<void> {
+    if (!this.writable)
+      throw new StorageAccessError(
+        "failure",
+        "本地数据尚未确认可读，已阻止写入以免覆盖原有项目",
+      );
     let indexedDbError: unknown;
     try {
       await this.storage.write(document);
