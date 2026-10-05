@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ProjectRepository } from "../../shared/repositories/projectRepository";
+import {
+  ProjectRepository,
+  type LoadFailure,
+} from "../../shared/repositories/projectRepository";
 import type {
   LatencyProject,
   SimulationMode,
@@ -34,10 +37,17 @@ export type LabStatus =
 export type LabModule =
   "projects" | "graph" | "simulation" | "scenarios" | "archive";
 
+/** 启动门禁：只有 ready 时工作区才可写。 */
+export type BootState =
+  | { phase: "loading" }
+  | { phase: "ready" }
+  | { phase: "unreadable"; failure: LoadFailure; recoveryCopy: string | null };
+
 export function useLatencyLab() {
   const repository = useMemo(() => new ProjectRepository(), []);
   const [document, setDocument] = useState<WorkspaceDocument | null>(null);
   const documentRef = useRef<WorkspaceDocument | null>(null);
+  const [boot, setBoot] = useState<BootState>({ phase: "loading" });
   const [status, setStatus] = useState<LabStatus>("loading");
   const [module, setModule] = useState<LabModule>("simulation");
   const [mode, setMode] = useState<SimulationMode>("expected");
@@ -87,27 +97,73 @@ export function useLatencyLab() {
     [],
   );
 
+  const mountedRef = useRef(true);
   useEffect(() => {
-    let mounted = true;
-    void repository
-      .load()
-      .then(({ document: loaded, recovered }) => {
-        if (!mounted) return;
-        documentRef.current = loaded;
-        setDocument(loaded);
-        setStatus("ready");
-        if (recovered)
-          setNotice("已载入示例工作区；后续修改会自动保存到此设备。");
-      })
-      .catch(() => {
-        if (!mounted) return;
-        setStatus("error");
-        setNotice("本地项目读取失败，刷新页面可再次尝试。");
-      });
+    mountedRef.current = true;
     return () => {
-      mounted = false;
+      mountedRef.current = false;
     };
+  }, []);
+
+  const bootLoad = useCallback(async () => {
+    setBoot({ phase: "loading" });
+    setStatus("loading");
+    let outcome;
+    try {
+      outcome = await repository.load();
+    } catch {
+      outcome = {
+        status: "unreadable" as const,
+        failure: "error" as const,
+        recoveryCopy: null,
+      };
+    }
+    if (!mountedRef.current) return;
+    if (outcome.status === "unreadable") {
+      // 数据状态未确认：停留在只读的恢复界面，不载入示例、不允许写入。
+      documentRef.current = null;
+      setDocument(null);
+      setBoot({
+        phase: "unreadable",
+        failure: outcome.failure,
+        recoveryCopy: outcome.recoveryCopy,
+      });
+      return;
+    }
+    documentRef.current = outcome.document;
+    setDocument(outcome.document);
+    setBoot({ phase: "ready" });
+    setStatus("ready");
+    if (outcome.source === "recovery-copy")
+      setNotice("主存储中的数据不可用，已从本机恢复副本还原工作区。");
+    else if (outcome.recovered)
+      setNotice("本地数据已损坏且没有可用副本，已载入示例工作区。");
+    else if (outcome.source === "fresh")
+      setNotice("已载入示例工作区；后续修改会自动保存到此设备。");
   }, [repository]);
+
+  useEffect(() => {
+    void bootLoad();
+  }, [bootLoad]);
+
+  const retryLoad = useCallback(() => {
+    void bootLoad();
+  }, [bootLoad]);
+
+  const exportRecoveryCopy = useCallback(() => {
+    if (boot.phase !== "unreadable" || !boot.recoveryCopy) return;
+    const blob = new Blob([boot.recoveryCopy], {
+      type: "application/json;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const anchor = window.document.createElement("a");
+    anchor.href = url;
+    anchor.download = `latency-lab-recovery-${new Date()
+      .toISOString()
+      .slice(0, 10)}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }, [boot]);
 
   const commit = useCallback(
     (next: WorkspaceDocument, nextStatus: LabStatus = "editing") => {
@@ -272,6 +328,7 @@ export function useLatencyLab() {
     result,
     graphAnalysis,
     simulationValid,
+    boot,
     status,
     module,
     setModule,
@@ -295,6 +352,8 @@ export function useLatencyLab() {
     removeSavedScenario,
     restoreSavedScenario,
     retrySave,
+    retryLoad,
+    exportRecoveryCopy,
     scenarioList,
     baselineScenario,
     comparisonScenario,

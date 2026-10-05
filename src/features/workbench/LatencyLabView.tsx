@@ -17,6 +17,7 @@ import SimulationPanel from "../simulation/SimulationPanel";
 import ScenarioPanel from "../scenarios/ScenarioPanel";
 import ArchivePanel from "../archive/ArchivePanel";
 import Sidebar, { type NavigationItem } from "./Sidebar";
+import StorageFailureScreen from "./StorageFailureScreen";
 
 const navigation: NavigationItem[] = [
   { id: "projects", label: "链路项目", sublabel: "PROJECTS", icon: Boxes },
@@ -43,6 +44,15 @@ const navigation: NavigationItem[] = [
 
 export default function LatencyLabView() {
   const vm = useLatencyLab();
+  if (vm.boot.phase === "unreadable")
+    return (
+      <StorageFailureScreen
+        failure={vm.boot.failure}
+        hasRecoveryCopy={Boolean(vm.boot.recoveryCopy)}
+        onRetry={vm.retryLoad}
+        onExportRecovery={vm.exportRecoveryCopy}
+      />
+    );
   if (
     vm.status === "loading" ||
     !vm.document ||

@@ -5,7 +5,11 @@ import {
   type ScenarioSnapshot,
   type WorkspaceDocument,
 } from "../domain/types";
-import { IndexedDbService } from "../services/indexedDbService";
+import {
+  IndexedDbService,
+  StorageBlockedError,
+  StorageUnsupportedError,
+} from "../services/indexedDbService";
 
 const FALLBACK_KEY = "latency-lab.workspace.v1";
 
@@ -193,46 +197,114 @@ export interface WorkspaceStorage {
   write(value: WorkspaceDocument): Promise<void>;
 }
 
+/** 读取未能确认数据状态的原因。 */
+export type LoadFailure = "blocked" | "unsupported" | "error";
+
+export type LoadOutcome =
+  | {
+      status: "ready";
+      document: WorkspaceDocument;
+      /** 数据被修复过，或来自恢复副本 / 示例。 */
+      recovered: boolean;
+      /** indexeddb：主存储；recovery-copy：本地恢复副本；fresh：确认无数据后载入示例。 */
+      source: "indexeddb" | "recovery-copy" | "fresh";
+    }
+  | {
+      status: "unreadable";
+      failure: LoadFailure;
+      /** 本机恢复副本的原始内容，供用户取出；没有副本时为 null。 */
+      recoveryCopy: string | null;
+    };
+
+function seedExample(): WorkspaceDocument {
+  return {
+    version: 1,
+    activeProjectId: EXAMPLE_PROJECT.id,
+    projects: [structuredClone(EXAMPLE_PROJECT)],
+  };
+}
+
+function readRecoveryCopyRaw(): string | null {
+  try {
+    return localStorage.getItem(FALLBACK_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function parseRecoveryCopy():
+  { document: WorkspaceDocument; recovered: boolean } | undefined {
+  const raw = readRecoveryCopyRaw();
+  if (!raw) return undefined;
+  try {
+    const parsed = parseWorkspace(JSON.parse(raw) as unknown);
+    if (parsed) return { ...parsed, recovered: true };
+  } catch {
+    try {
+      localStorage.removeItem(FALLBACK_KEY);
+    } catch {
+      // 忽略清理失败
+    }
+  }
+  return undefined;
+}
+
 export class ProjectRepository {
+  /** 只有成功完成一次读取、确认过数据状态后才允许写入，避免覆盖真实数据。 */
+  private readConfirmed = false;
+
   constructor(
     private readonly storage: WorkspaceStorage = new IndexedDbService(),
   ) {}
 
-  async load(): Promise<{ document: WorkspaceDocument; recovered: boolean }> {
+  async load(): Promise<LoadOutcome> {
+    let stored: unknown;
     try {
-      const stored = parseWorkspace(await this.storage.read());
-      if (stored) return stored;
-      const local = localStorage.getItem(FALLBACK_KEY);
-      if (local) {
-        try {
-          const fallback = parseWorkspace(JSON.parse(local) as unknown);
-          if (fallback) return { ...fallback, recovered: true };
-        } catch {
-          localStorage.removeItem(FALLBACK_KEY);
-        }
-      }
-    } catch {
-      const local = localStorage.getItem(FALLBACK_KEY);
-      if (local) {
-        try {
-          const fallback = parseWorkspace(JSON.parse(local) as unknown);
-          if (fallback) return { ...fallback, recovered: true };
-        } catch {
-          localStorage.removeItem(FALLBACK_KEY);
-        }
-      }
+      stored = await this.storage.read();
+    } catch (error) {
+      // 读取没有成功：数据是否存在尚未确认，不能回退到示例，也不能进入可写状态。
+      const failure: LoadFailure =
+        error instanceof StorageUnsupportedError
+          ? "unsupported"
+          : error instanceof StorageBlockedError
+            ? "blocked"
+            : "error";
+      return {
+        status: "unreadable",
+        failure,
+        recoveryCopy: readRecoveryCopyRaw(),
+      };
     }
+    this.readConfirmed = true;
+    const parsed = parseWorkspace(stored);
+    if (parsed) return { status: "ready", ...parsed, source: "indexeddb" };
+    if (stored === undefined) {
+      // 读取成功且确实没有数据：优先还原恢复副本，否则按首次使用载入示例。
+      const recovery = parseRecoveryCopy();
+      if (recovery)
+        return { status: "ready", ...recovery, source: "recovery-copy" };
+      return {
+        status: "ready",
+        document: seedExample(),
+        recovered: false,
+        source: "fresh",
+      };
+    }
+    // 读取成功但内容损坏：用恢复副本还原；没有副本时才退回示例。
+    const recovery = parseRecoveryCopy();
+    if (recovery)
+      return { status: "ready", ...recovery, source: "recovery-copy" };
     return {
-      document: {
-        version: 1,
-        activeProjectId: EXAMPLE_PROJECT.id,
-        projects: [structuredClone(EXAMPLE_PROJECT)],
-      },
+      status: "ready",
+      document: seedExample(),
       recovered: true,
+      source: "fresh",
     };
   }
 
   async save(document: WorkspaceDocument): Promise<void> {
+    if (!this.readConfirmed)
+      throw new Error("本地数据状态尚未确认，已阻止写入以避免覆盖");
     let indexedDbError: unknown;
     try {
       await this.storage.write(document);

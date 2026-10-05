@@ -670,6 +670,50 @@ button:disabled {
     transform: translateX(130%);
   }
 }
+.storage-failure {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  max-width: 400px;
+  margin-top: 14px;
+  padding: 24px 28px;
+  text-align: center;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+}
+.storage-failure-icon {
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  color: #8a5a17;
+  background: #fdf3e0;
+  border-radius: 11px;
+}
+.storage-failure h1 {
+  margin: 0;
+  color: #223a32;
+  font: 700 15px var(--display);
+}
+.storage-failure p {
+  margin: 0;
+  color: #708078;
+  font-size: 11px;
+  line-height: 1.7;
+}
+.storage-failure-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 9px;
+  margin-top: 6px;
+}
+.storage-failure-hint {
+  color: #8fa08a;
+  font-size: 10px;
+}
 .project-workbench {
   display: grid;
   grid-template-columns: minmax(250px, 0.82fr) minmax(400px, 1.5fr);
